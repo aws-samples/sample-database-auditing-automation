@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Audit AI Dashboard</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; background: #f5f7fa; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header h1 { font-size: 32px; margin-bottom: 10px; }
+        .header p { opacity: 0.9; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-card h3 { color: #666; font-size: 14px; text-transform: uppercase; margin-bottom: 10px; }
+        .stat-card .value { font-size: 36px; font-weight: bold; color: #667eea; }
+        .section { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .section h2 { margin-bottom: 20px; color: #333; }
+        .btn { background: #667eea; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; }
+        .btn:hover { background: #5568d3; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+        .btn:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+        .report-list { list-style: none; }
+        .report-item { padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }
+        .report-item:hover { background: #f9f9f9; }
+        .report-item:last-child { border-bottom: none; }
+        .report-date { color: #666; font-size: 14px; }
+        .report-content { background: #f9f9f9; padding: 20px; border-radius: 6px; white-space: pre-wrap; font-family: monospace; font-size: 13px; max-height: 600px; overflow-y: auto; margin-top: 20px; }
+        .loading { text-align: center; padding: 40px; color: #666; }
+        .error { background: #fee; color: #c33; padding: 15px; border-radius: 6px; margin: 20px 0; }
+        .success { background: #efe; color: #3c3; padding: 15px; border-radius: 6px; margin: 20px 0; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #eee; }
+        .tab { padding: 12px 24px; cursor: pointer; border: none; background: none; font-size: 16px; color: #666; transition: all 0.3s; }
+        .tab.active { color: #667eea; border-bottom: 3px solid #667eea; font-weight: 600; }
+        .tab:hover { color: #667eea; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const API_ENDPOINT = 'https://hbahedp2dd.execute-api.us-east-1.amazonaws.com/prod';
+
+        function App() {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [stats, setStats] = useState(null);
+            const [reports, setReports] = useState([]);
+            const [selectedReport, setSelectedReport] = useState(null);
+            const [reportContent, setReportContent] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [message, setMessage] = useState(null);
+
+            useEffect(() => {
+                loadStats();
+                loadReports();
+            }, []);
+
+            const loadStats = async () => {
+                try {
+                    const response = await fetch(`${API_ENDPOINT}/stats`);
+                    const data = await response.json();
+                    setStats(data.stats);
+                } catch (error) {
+                    console.error('Error loading stats:', error);
+                }
+            };
+
+            const loadReports = async () => {
+                try {
+                    const response = await fetch(`${API_ENDPOINT}/reports`);
+                    const data = await response.json();
+                    setReports(data.reports);
+                } catch (error) {
+                    console.error('Error loading reports:', error);
+                }
+            };
+
+            const loadReportContent = async (key) => {
+                setLoading(true);
+                try {
+                    const response = await fetch(`${API_ENDPOINT}/report-content?key=${encodeURIComponent(key)}`);
+                    const data = await response.json();
+                    setReportContent(data.content);
+                    setSelectedReport(key);
+                } catch (error) {
+                    setMessage({ type: 'error', text: 'Error loading report content' });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const triggerReport = async () => {
+                setLoading(true);
+                setMessage(null);
+                try {
+                    const response = await fetch(`${API_ENDPOINT}/trigger-report`, { method: 'POST' });
+                    const data = await response.json();
+                    setMessage({ type: 'success', text: 'Report generation triggered! Check back in a few minutes.' });
+                    setTimeout(() => loadReports(), 5000);
+                } catch (error) {
+                    setMessage({ type: 'error', text: 'Error triggering report generation' });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="container">
+                    <div className="header">
+                        <h1>🔒 Database Audit AI Dashboard</h1>
+                        <p>AI-powered database audit and compliance monitoring</p>
+                    </div>
+
+                    <div className="tabs">
+                        <button className={`tab ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>Dashboard</button>
+                        <button className={`tab ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => setActiveTab('reports')}>Reports</button>
+                    </div>
+
+                    {activeTab === 'dashboard' && (
+                        <>
+                            <div className="stats">
+                                <div className="stat-card">
+                                    <h3>SQL Server Logs Today</h3>
+                                    <div className="value">{stats?.sqlserver_logs_today || 0}</div>
+                                </div>
+                                <div className="stat-card">
+                                    <h3>PostgreSQL Logs Today</h3>
+                                    <div className="value">{stats?.postgresql_logs_today || 0}</div>
+                                </div>
+                                <div className="stat-card">
+                                    <h3>Total Reports</h3>
+                                    <div className="value">{stats?.total_reports || 0}</div>
+                                </div>
+                                <div className="stat-card">
+                                    <h3>Last Updated</h3>
+                                    <div className="value" style={{fontSize: '16px', marginTop: '10px'}}>
+                                        {stats?.last_updated ? new Date(stats.last_updated).toLocaleString() : 'N/A'}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="section">
+                                <h2>Quick Actions</h2>
+                                <button className="btn" onClick={triggerReport} disabled={loading}>
+                                    {loading ? 'Generating...' : 'Generate Report Now'}
+                                </button>
+                                {message && (
+                                    <div className={message.type}>{message.text}</div>
+                                )}
+                            </div>
+
+                            <div className="section">
+                                <h2>Recent Reports</h2>
+                                {reports.length === 0 ? (
+                                    <p style={{color: '#666'}}>No reports available yet. Generate your first report above.</p>
+                                ) : (
+                                    <ul className="report-list">
+                                        {reports.slice(0, 5).map((report, index) => (
+                                            <li key={index} className="report-item">
+                                                <div>
+                                                    <strong>{report.key.split('/').pop()}</strong>
+                                                    <div className="report-date">{new Date(report.date).toLocaleString()}</div>
+                                                </div>
+                                                <button className="btn" onClick={() => { setActiveTab('reports'); loadReportContent(report.key); }}>
+                                                    View
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        </>
+                    )}
+
+                    {activeTab === 'reports' && (
+                        <div className="section">
+                            <h2>Compliance Reports</h2>
+                            {reports.length === 0 ? (
+                                <p style={{color: '#666'}}>No reports available yet.</p>
+                            ) : (
+                                <>
+                                    <ul className="report-list">
+                                        {reports.map((report, index) => (
+                                            <li key={index} className="report-item">
+                                                <div>
+                                                    <strong>{report.key.split('/').pop()}</strong>
+                                                    <div className="report-date">{new Date(report.date).toLocaleString()} • {(report.size / 1024).toFixed(2)} KB</div>
+                                                </div>
+                                                <button className="btn" onClick={() => loadReportContent(report.key)} disabled={loading}>
+                                                    {selectedReport === report.key ? 'Viewing' : 'View'}
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </ul>
+
+                                    {loading && <div className="loading">Loading report...</div>}
+
+                                    {reportContent && !loading && (
+                                        <div className="report-content">{reportContent}</div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

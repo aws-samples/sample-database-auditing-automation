@@ -1,0 +1,563 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Database Audit AI Solution - Phase 1 Infrastructure'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: db-audit-ai
+    Description: Project name for resource naming
+
+Resources:
+  # S3 Bucket for Audit Logs
+  AuditLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-audit-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 180
+                StorageClass: GLACIER
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # S3 Bucket for AI-Generated Reports
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-reports-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: COMPLIANCE
+            Years: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # CloudWatch Log Group for RDS SQL Server
+  RDSSQLServerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/rds/sqlserver/audit
+      RetentionInDays: 90
+
+  # CloudWatch Log Group for Aurora PostgreSQL
+  AuroraPostgreSQLLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/rds/aurora-postgresql/audit
+      RetentionInDays: 90
+
+  # IAM Role for Lambda Log Processor
+  LogProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-log-processor-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LogProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:GetLogEvents
+                  - logs:FilterLogEvents
+                Resource:
+                  - !GetAtt RDSSQLServerLogGroup.Arn
+                  - !GetAtt AuroraPostgreSQLLogGroup.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource:
+                  - !Sub '${AuditLogsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  # Lambda Function for Log Processing
+  LogProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-log-processor'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LogProcessorRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          AUDIT_LOGS_BUCKET: !Ref AuditLogsBucket
+          REPORTS_BUCKET: !Ref ReportsBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import gzip
+          import base64
+          from datetime import datetime
+          import os
+          
+          s3 = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+              bucket = os.environ['AUDIT_LOGS_BUCKET']
+              
+              # Decode CloudWatch Logs data
+              log_data = json.loads(gzip.decompress(base64.b64decode(event['awslogs']['data'])))
+              
+              log_group = log_data['logGroup']
+              log_stream = log_data['logStream']
+              log_events = log_data['logEvents']
+              
+              # Determine database type
+              db_type = 'sqlserver' if 'sqlserver' in log_group else 'postgresql'
+              
+              # Process and store logs
+              processed_logs = []
+              for log_event in log_events:
+                  processed_log = {
+                      'timestamp': log_event['timestamp'],
+                      'message': log_event['message'],
+                      'db_type': db_type,
+                      'log_group': log_group,
+                      'log_stream': log_stream
+                  }
+                  processed_logs.append(processed_log)
+              
+              # Store in S3
+              date_prefix = datetime.now().strftime('%Y/%m/%d')
+              key = f'{db_type}/audit-logs/{date_prefix}/{log_stream}-{context.request_id}.json'
+              
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=key,
+                  Body=json.dumps(processed_logs),
+                  ContentType='application/json'
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Processed {len(processed_logs)} log events')
+              }
+
+  # CloudWatch Logs Subscription Filter for SQL Server
+  SQLServerSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      LogGroupName: !Ref RDSSQLServerLogGroup
+      FilterPattern: ''
+      DestinationArn: !GetAtt LogProcessorFunction.Arn
+
+  # CloudWatch Logs Subscription Filter for PostgreSQL
+  PostgreSQLSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      LogGroupName: !Ref AuroraPostgreSQLLogGroup
+      FilterPattern: ''
+      DestinationArn: !GetAtt LogProcessorFunction.Arn
+
+  # Lambda Permission for CloudWatch Logs
+  LogProcessorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LogProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: logs.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # IAM Role for AI Report Generator
+  ReportGeneratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-report-generator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReportGeneratorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt AuditLogsBucket.Arn
+                  - !Sub '${AuditLogsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${ReportsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  # Lambda Function for AI Report Generation
+  ReportGeneratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-report-generator'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt ReportGeneratorRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          AUDIT_LOGS_BUCKET: !Ref AuditLogsBucket
+          REPORTS_BUCKET: !Ref ReportsBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from datetime import datetime, timedelta
+          import os
+          
+          s3 = boto3.client('s3')
+          bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+          
+          def lambda_handler(event, context):
+              bucket = os.environ['AUDIT_LOGS_BUCKET']
+              reports_bucket = os.environ['REPORTS_BUCKET']
+              
+              # Get previous month's data
+              now = datetime.now()
+              first_day = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
+              year_month = first_day.strftime('%Y/%m')
+              
+              # Collect logs from both databases
+              audit_data = {'sqlserver': [], 'postgresql': []}
+              
+              for db_type in ['sqlserver', 'postgresql']:
+                  prefix = f'{db_type}/audit-logs/{year_month}/'
+                  
+                  paginator = s3.get_paginator('list_objects_v2')
+                  for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                      if 'Contents' not in page:
+                          continue
+                      
+                      for obj in page['Contents'][:100]:  # Limit for demo
+                          response = s3.get_object(Bucket=bucket, Key=obj['Key'])
+                          logs = json.loads(response['Body'].read())
+                          audit_data[db_type].extend(logs)
+              
+              # Analyze with Bedrock
+              prompt = "Analyze the following database audit logs and generate a compliance report.\n\n"
+              prompt += f"SQL Server Logs: {len(audit_data['sqlserver'])} events\n"
+              prompt += f"PostgreSQL Logs: {len(audit_data['postgresql'])} events\n\n"
+              prompt += "Sample logs:\n"
+              prompt += json.dumps(audit_data['sqlserver'][:5] + audit_data['postgresql'][:5], indent=2)
+              prompt += "\n\nGenerate a report covering:\n"
+              prompt += "1. Executive Summary\n"
+              prompt += "2. Login Activity Analysis (detect anomalies)\n"
+              prompt += "3. Privileged Access Monitoring (DBA activities)\n"
+              prompt += "4. Change Pattern Analysis\n"
+              prompt += "5. Compliance Findings\n"
+              prompt += "6. Recommendations\n\n"
+              prompt += "Format as a professional audit report."
+              
+              body = json.dumps({
+                  "anthropic_version": "bedrock-2023-05-31",
+                  "max_tokens": 4000,
+                  "messages": [{
+                      "role": "user",
+                      "content": prompt
+                  }]
+              })
+              
+              response = bedrock.invoke_model(
+                  modelId=os.environ.get('MODEL_ID', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'),
+                  body=body
+              )
+              
+              result = json.loads(response['body'].read())
+              report_content = result['content'][0]['text']
+              
+              # Store report
+              report_key = f'monthly-reports/{year_month}/audit-report.txt'
+              s3.put_object(
+                  Bucket=reports_bucket,
+                  Key=report_key,
+                  Body=report_content,
+                  ContentType='text/plain',
+                  Metadata={
+                      'report-date': year_month,
+                      'generated-at': datetime.now().isoformat()
+                  }
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'report_location': f's3://{reports_bucket}/{report_key}',
+                      'sqlserver_events': len(audit_data['sqlserver']),
+                      'postgresql_events': len(audit_data['postgresql'])
+                  })
+              }
+
+  # EventBridge Rule for Monthly Report Generation
+  MonthlyReportSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-monthly-report'
+      Description: Generate monthly audit report on 1st of each month
+      ScheduleExpression: 'cron(0 2 1 * ? *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ReportGeneratorFunction.Arn
+          Id: ReportGeneratorTarget
+
+  # Lambda Permission for EventBridge
+  ReportGeneratorEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReportGeneratorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MonthlyReportSchedule.Arn
+
+  # IAM Role for Anomaly Detector
+  AnomalyDetectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-anomaly-detector-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AnomalyDetectorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt AuditLogsBucket.Arn
+                  - !Sub '${AuditLogsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AnomalyAlertTopic
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  # SNS Topic for Anomaly Alerts
+  AnomalyAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-anomaly-alerts'
+      DisplayName: Database Audit Anomaly Alerts
+
+  # Lambda Function for Anomaly Detection
+  AnomalyDetectorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-anomaly-detector'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt AnomalyDetectorRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          AUDIT_LOGS_BUCKET: !Ref AuditLogsBucket
+          SNS_TOPIC_ARN: !Ref AnomalyAlertTopic
+          PRIVILEGED_USERS: 'dba_user1,dba_user2'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+          bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+          
+          def lambda_handler(event, context):
+              bucket = os.environ['AUDIT_LOGS_BUCKET']
+              sns_topic = os.environ['SNS_TOPIC_ARN']
+              privileged_users = os.environ['PRIVILEGED_USERS'].split(',')
+              
+              # Get today's logs
+              today = datetime.now().strftime('%Y/%m/%d')
+              
+              anomalies = []
+              
+              for db_type in ['sqlserver', 'postgresql']:
+                  prefix = f'{db_type}/audit-logs/{today}/'
+                  
+                  try:
+                      paginator = s3.get_paginator('list_objects_v2')
+                      logs = []
+                      
+                      for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                          if 'Contents' not in page:
+                              continue
+                          
+                          for obj in page['Contents']:
+                              response = s3.get_object(Bucket=bucket, Key=obj['Key'])
+                              logs.extend(json.loads(response['Body'].read()))
+                      
+                      # Analyze with Bedrock
+                      if logs:
+                          prompt = "Analyze these database audit logs for anomalies:\n\n"
+                          prompt += f"Privileged users to monitor: {', '.join(privileged_users)}\n\n"
+                          prompt += "Logs:\n"
+                          prompt += json.dumps(logs[:50], indent=2)
+                          prompt += "\n\nDetect:\n"
+                          prompt += "1. Failed login attempts (>3 in 10 minutes)\n"
+                          prompt += "2. Unusual login times (outside 9 AM - 6 PM)\n"
+                          prompt += "3. Privileged user activities\n"
+                          prompt += "4. Suspicious query patterns\n"
+                          prompt += "5. Unauthorized schema changes\n\n"
+                          prompt += 'Return JSON: {"anomalies": [{"type": "...", "severity": "high/medium/low", "description": "..."}]}'
+                          
+                          body = json.dumps({
+                              "anthropic_version": "bedrock-2023-05-31",
+                              "max_tokens": 2000,
+                              "messages": [{
+                                  "role": "user",
+                                  "content": prompt
+                              }]
+                          })
+                          
+                          response = bedrock.invoke_model(
+                              modelId='anthropic.claude-3-sonnet-20240229-v1:0',
+                              body=body
+                          )
+                          
+                          result = json.loads(response['body'].read())
+                          analysis = result['content'][0]['text']
+                          
+                          # Extract anomalies
+                          try:
+                              detected = json.loads(analysis)
+                              anomalies.extend(detected.get('anomalies', []))
+                          except:
+                              pass
+                  
+                  except Exception as e:
+                      print(f"Error processing {db_type}: {str(e)}")
+              
+              # Send alerts for high severity anomalies
+              high_severity = [a for a in anomalies if a.get('severity') == 'high']
+              
+              if high_severity:
+                  message = f"Database Audit Anomalies Detected:\n\n"
+                  for anomaly in high_severity:
+                      message += f"- {anomaly['type']}: {anomaly['description']}\n"
+                  
+                  sns.publish(
+                      TopicArn=sns_topic,
+                      Subject='[ALERT] Database Audit Anomalies Detected',
+                      Message=message
+                  )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'total_anomalies': len(anomalies),
+                      'high_severity': len(high_severity)
+                  })
+              }
+
+  # EventBridge Rule for Hourly Anomaly Detection
+  HourlyAnomalyCheck:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-hourly-anomaly-check'
+      Description: Check for anomalies every hour
+      ScheduleExpression: 'rate(1 hour)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt AnomalyDetectorFunction.Arn
+          Id: AnomalyDetectorTarget
+
+  # Lambda Permission for EventBridge
+  AnomalyDetectorEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AnomalyDetectorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HourlyAnomalyCheck.Arn
+
+Outputs:
+  AuditLogsBucket:
+    Description: S3 bucket for audit logs
+    Value: !Ref AuditLogsBucket
+  
+  ReportsBucket:
+    Description: S3 bucket for AI-generated reports
+    Value: !Ref ReportsBucket
+  
+  AnomalyAlertTopic:
+    Description: SNS topic for anomaly alerts
+    Value: !Ref AnomalyAlertTopic
+  
+  LogProcessorFunction:
+    Description: Lambda function for log processing
+    Value: !Ref LogProcessorFunction
+  
+  ReportGeneratorFunction:
+    Description: Lambda function for report generation
+    Value: !Ref ReportGeneratorFunction
+  
+  AnomalyDetectorFunction:
+    Description: Lambda function for anomaly detection
+    Value: !Ref AnomalyDetectorFunction
