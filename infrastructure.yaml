@@ -1,11 +1,31 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Database Audit AI Solution - Phase 1 Infrastructure'
+Description: 'Database Audit AI Solution - Complete Infrastructure (AI Analysis + Real-time Log Monitoring + Historical Query)'
 
 Parameters:
   ProjectName:
     Type: String
     Default: db-audit-ai
     Description: Project name for resource naming
+
+  LogGroupName:
+    Type: String
+    Default: /aws/rds/cluster/database-rnd/postgresql
+    Description: CloudWatch Log Group for PostgreSQL audit logs
+
+  OrganizationId:
+    Type: String
+    Default: ''
+    Description: AWS Organization ID for cross-account access (leave empty for single account)
+
+  EnableCrossAccountAccess:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable cross-account log ingestion from other accounts in the org
+
+Conditions:
+  IsCrossAccount: !Equals [!Ref EnableCrossAccountAccess, 'true']
+  HasOrgId: !Not [!Equals [!Ref OrganizationId, '']]
 
 Resources:
   # S3 Bucket for Audit Logs
@@ -537,6 +557,315 @@ Resources:
       Principal: events.amazonaws.com
       SourceArn: !GetAtt HourlyAnomalyCheck.Arn
 
+  # ─────────────────────────────────────────────
+  # Log Archival: Kinesis Firehose + S3
+  # ─────────────────────────────────────────────
+
+  LogArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-log-archive-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: GLACIER
+
+  LogArchiveBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsCrossAccount
+    Properties:
+      Bucket: !Ref LogArchiveBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowOrgAccess
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub '${LogArchiveBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-athena-results-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldResults
+            Status: Enabled
+            ExpirationInDays: 7
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt LogArchiveBucket.Arn
+                  - !Sub '${LogArchiveBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                Resource: '*'
+
+  LogDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${ProjectName}-log-stream'
+      DeliveryStreamType: DirectPut
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt LogArchiveBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        Prefix: 'rds-logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        ErrorOutputPrefix: 'rds-logs-errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        BufferingHints:
+          SizeInMBs: 5
+          IntervalInSeconds: 300
+        CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub '/aws/firehose/${ProjectName}-log-stream'
+          LogStreamName: S3Delivery
+
+  SubscriptionFilterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-cw-to-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehosePutAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt LogDeliveryStream.Arn
+
+  PostgreSQLFirehoseSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn: LogDeliveryStream
+    Properties:
+      LogGroupName: !Ref LogGroupName
+      FilterPattern: ''
+      DestinationArn: !GetAtt LogDeliveryStream.Arn
+      RoleArn: !GetAtt SubscriptionFilterRole.Arn
+      FilterName: !Sub '${ProjectName}-to-firehose'
+
+  # ─────────────────────────────────────────────
+  # Athena
+  # ─────────────────────────────────────────────
+
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-workgroup'
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${AthenaResultsBucket}/athena-results/'
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+  # ─────────────────────────────────────────────
+  # Log Query Lambda + API Gateway
+  # ─────────────────────────────────────────────
+
+  LogQueryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-log-query-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LogQueryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt LogArchiveBucket.Arn
+                  - !Sub '${LogArchiveBucket.Arn}/*'
+                  - !GetAtt AthenaResultsBucket.Arn
+                  - !Sub '${AthenaResultsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetPartitions
+                  - glue:GetDatabase
+                Resource: '*'
+
+  LogQueryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-log-query-handler'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LogQueryRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          LOG_GROUP: !Ref LogGroupName
+          ATHENA_DATABASE: rds_logs
+          ATHENA_TABLE: postgresql_logs
+          ATHENA_RESULTS_S3: !Sub 's3://${AthenaResultsBucket}/athena-results/'
+          ATHENA_WORKGROUP: !Sub '${ProjectName}-workgroup'
+          CW_RETENTION_DAYS: '30'
+      Code:
+        ZipFile: |
+          # See log-query-handler.py for full implementation
+          # Deploy via: aws lambda update-function-code --function-name db-audit-ai-log-query-handler --zip-file fileb://log-query-handler.zip
+          import json
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'message': 'Deploy log-query-handler.py to this function'})}
+
+  LogQueryApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-log-query-api'
+      Description: API for PostgreSQL log queries
+
+  LogQueryApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref LogQueryApi
+      ParentId: !GetAtt LogQueryApi.RootResourceId
+      PathPart: query
+
+  LogQueryApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogQueryApi
+      ResourceId: !Ref LogQueryApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LogQueryFunction.Arn}/invocations'
+
+  LogQueryApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref LogQueryApi
+      ResourceId: !Ref LogQueryApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  LogQueryApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - LogQueryApiMethod
+      - LogQueryApiOptionsMethod
+    Properties:
+      RestApiId: !Ref LogQueryApi
+      StageName: Prod
+
+  LogQueryLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LogQueryFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${LogQueryApi}/*'
+
 Outputs:
   AuditLogsBucket:
     Description: S3 bucket for audit logs
@@ -561,3 +890,23 @@ Outputs:
   AnomalyDetectorFunction:
     Description: Lambda function for anomaly detection
     Value: !Ref AnomalyDetectorFunction
+
+  LogArchiveBucketName:
+    Value: !Ref LogArchiveBucket
+    Description: S3 bucket for archived logs
+
+  AthenaResultsBucketName:
+    Value: !Ref AthenaResultsBucket
+    Description: S3 bucket for Athena query results
+
+  FirehoseStreamName:
+    Value: !Ref LogDeliveryStream
+    Description: Kinesis Firehose delivery stream
+
+  LogQueryApiEndpoint:
+    Value: !Sub 'https://${LogQueryApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/query'
+    Description: API endpoint for log queries
+
+  AthenaWorkGroupName:
+    Value: !Ref AthenaWorkGroup
+    Description: Athena workgroup name
