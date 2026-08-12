@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Audit AI — Log Monitor</title>
+    <style>
+        :root {
+            --sidebar-width: 260px;
+            --sidebar-bg: #1e1e2e;
+            --sidebar-hover: #2d2d44;
+            --sidebar-active: #3b3b5c;
+            --primary: #6c63ff;
+            --primary-light: #8b83ff;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #1f2937;
+            --text-secondary: #6b7280;
+            --text-light: #e2e8f0;
+            --border: #e5e7eb;
+            --bg-main: #f9fafb;
+            --bg-card: #ffffff;
+            --radius: 8px;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--sidebar-bg);
+            color: var(--text-light);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 100;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 24px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .sidebar-header h1 {
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+
+        .sidebar-header .subtitle {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+        }
+
+        .sidebar-nav {
+            padding: 16px 12px;
+            flex: 1;
+        }
+
+        .sidebar-nav label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: rgba(255,255,255,0.4);
+            padding: 0 8px;
+            margin-bottom: 8px;
+        }
+
+        .nav-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 10px 12px;
+            border: none;
+            background: transparent;
+            color: var(--text-light);
+            font-size: 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            text-align: left;
+            margin-bottom: 2px;
+        }
+
+        .nav-btn:hover {
+            background: var(--sidebar-hover);
+        }
+
+        .nav-btn.active {
+            background: var(--sidebar-active);
+            color: #fff;
+            font-weight: 500;
+        }
+
+        .nav-btn .icon {
+            font-size: 16px;
+            width: 20px;
+            text-align: center;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            padding: 32px;
+            min-width: 0;
+        }
+
+        .page-header {
+            margin-bottom: 24px;
+        }
+
+        .page-header h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .page-header p {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* Controls Bar */
+        .controls-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 24px;
+            padding: 16px 20px;
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .time-range-group {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+
+        .time-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--text-secondary);
+            font-size: 13px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+
+        .time-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .time-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #fff;
+        }
+
+        .custom-range {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .custom-range input[type="datetime-local"] {
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            color: var(--text-primary);
+            background: #fff;
+        }
+
+        .custom-range input[type="datetime-local"]:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(108,99,255,0.1);
+        }
+
+        .username-filter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .username-filter input {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            width: 160px;
+        }
+
+        .username-filter input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(108,99,255,0.1);
+        }
+
+        .controls-right {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-light);
+        }
+
+        .btn-secondary {
+            background: #fff;
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-main);
+        }
+
+        /* Source Badge */
+        .source-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .source-badge.cloudwatch {
+            background: #ecfdf5;
+            color: #065f46;
+            border: 1px solid #a7f3d0;
+        }
+
+        .source-badge.athena {
+            background: #eff6ff;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+        }
+
+        /* Results Area */
+        .results-area {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .results-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .results-header .count {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .results-header .count strong {
+            color: var(--text-primary);
+        }
+
+        .download-group {
+            display: flex;
+            gap: 4px;
+        }
+
+        .download-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--text-secondary);
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .download-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* Table */
+        .results-table-wrapper {
+            overflow-x: auto;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .results-table th {
+            text-align: left;
+            padding: 12px 16px;
+            background: var(--bg-main);
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .results-table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-primary);
+            vertical-align: top;
+            max-width: 500px;
+            word-wrap: break-word;
+        }
+
+        .results-table tr:hover td {
+            background: #f8fafc;
+        }
+
+        .results-table td.timestamp {
+            white-space: nowrap;
+            color: var(--text-secondary);
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+        }
+
+        .results-table td.message {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        /* Loading Spinner */
+        .loading-overlay {
+            display: none;
+            padding: 60px 20px;
+            text-align: center;
+        }
+
+        .loading-overlay.active {
+            display: block;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-overlay p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            padding: 60px 20px;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state h3 {
+            font-size: 16px;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        /* Error State */
+        .error-state {
+            padding: 20px;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: var(--radius);
+            margin: 16px 20px;
+            color: #991b1b;
+            font-size: 14px;
+            display: none;
+        }
+
+        .error-state.active {
+            display: block;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 220px;
+            }
+            .main-content {
+                margin-left: 220px;
+                padding: 24px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 100%;
+                position: relative;
+                height: auto;
+            }
+            .sidebar-nav {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4px;
+                padding: 12px;
+            }
+            .sidebar-nav label {
+                width: 100%;
+            }
+            .nav-btn {
+                flex: 0 0 auto;
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 16px;
+            }
+            .controls-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .controls-right {
+                margin-left: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>Database Audit AI</h1>
+            <div class="subtitle">Log Monitor</div>
+        </div>
+        <nav class="sidebar-nav">
+            <label>Query Types</label>
+            <button class="nav-btn active" data-type="logs" onclick="switchTab(this)">
+                <span class="icon">📋</span> View Logs
+            </button>
+            <button class="nav-btn" data-type="slow_queries" onclick="switchTab(this)">
+                <span class="icon">🐢</span> Slow Queries
+            </button>
+            <button class="nav-btn" data-type="active_users" onclick="switchTab(this)">
+                <span class="icon">👥</span> Active Users
+            </button>
+            <button class="nav-btn" data-type="top_cpu_queries" onclick="switchTab(this)">
+                <span class="icon">🔥</span> Top CPU Queries
+            </button>
+            <button class="nav-btn" data-type="user_activity" onclick="switchTab(this)">
+                <span class="icon">📊</span> User Activity
+            </button>
+            <button class="nav-btn" data-type="failed_logins" onclick="switchTab(this)">
+                <span class="icon">🚫</span> Failed Logins
+            </button>
+            <button class="nav-btn" data-type="schema_changes" onclick="switchTab(this)">
+                <span class="icon">🔧</span> Schema Changes
+            </button>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="page-header">
+            <h2 id="pageTitle">View Logs</h2>
+            <p id="clusterName">RDS Cluster: my-aurora-cluster</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls-bar">
+            <div class="time-range-group">
+                <button class="time-btn active" data-range="last_hour" onclick="selectTimeRange(this)">Last Hour</button>
+                <button class="time-btn" data-range="last_24h" onclick="selectTimeRange(this)">Last 24h</button>
+                <button class="time-btn" data-range="last_7d" onclick="selectTimeRange(this)">Last 7 Days</button>
+                <button class="time-btn" data-range="last_30d" onclick="selectTimeRange(this)">Last 30 Days</button>
+                <button class="time-btn" data-range="custom" onclick="selectTimeRange(this)">Custom</button>
+            </div>
+
+            <div class="custom-range" id="customRangeInputs" style="display: none;">
+                <input type="datetime-local" id="startTime" aria-label="Start time">
+                <span style="color: var(--text-secondary);">to</span>
+                <input type="datetime-local" id="endTime" aria-label="End time">
+            </div>
+
+            <div class="username-filter" id="usernameFilter" style="display: none;">
+                <input type="text" id="usernameInput" placeholder="Filter by username…" aria-label="Username filter">
+            </div>
+
+            <div class="controls-right">
+                <span class="source-badge cloudwatch" id="sourceBadge">⚡ CloudWatch (Live)</span>
+                <button class="btn btn-primary" onclick="executeQuery()">Run Query</button>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-area">
+            <div class="results-header">
+                <span class="count" id="resultCount">Ready to query</span>
+                <div class="download-group">
+                    <button class="download-btn" onclick="downloadResults('csv')" id="downloadCsv" disabled>⬇ CSV</button>
+                    <button class="download-btn" onclick="downloadResults('json')" id="downloadJson" disabled>⬇ JSON</button>
+                </div>
+            </div>
+
+            <div class="error-state" id="errorState"></div>
+
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <p>Querying logs…</p>
+            </div>
+
+            <div class="empty-state" id="emptyState">
+                <div class="icon">🔍</div>
+                <h3>No results yet</h3>
+                <p>Select a query type and time range, then click "Run Query" to fetch logs.</p>
+            </div>
+
+            <div class="results-table-wrapper" id="tableWrapper" style="display: none;">
+                <table class="results-table">
+                    <thead id="tableHead"></thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // ============================================================
+        // Configuration
+        // ============================================================
+        const CONFIG = {
+            API_URL: 'https://API_GATEWAY_URL/Prod/query',
+            RDS_CLUSTER: 'my-aurora-cluster',
+            DEFAULT_LIMIT: 100
+        };
+
+        // ============================================================
+        // State
+        // ============================================================
+        let state = {
+            activeType: 'logs',
+            timeRange: 'last_hour',
+            results: null,
+            source: null
+        };
+
+        // ============================================================
+        // Initialization
+        // ============================================================
+        document.getElementById('clusterName').textContent = `RDS Cluster: ${CONFIG.RDS_CLUSTER}`;
+
+        // ============================================================
+        // Tab Switching
+        // ============================================================
+        function switchTab(btn) {
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.activeType = btn.dataset.type;
+
+            const titles = {
+                logs: 'View Logs',
+                slow_queries: 'Slow Queries',
+                active_users: 'Active Users',
+                top_cpu_queries: 'Top CPU Queries',
+                user_activity: 'User Activity',
+                failed_logins: 'Failed Logins',
+                schema_changes: 'Schema Changes'
+            };
+            document.getElementById('pageTitle').textContent = titles[state.activeType] || 'View Logs';
+
+            // Show/hide username filter
+            const usernameFilter = document.getElementById('usernameFilter');
+            usernameFilter.style.display = state.activeType === 'user_activity' ? 'flex' : 'none';
+        }
+
+        // ============================================================
+        // Time Range Selection
+        // ============================================================
+        function selectTimeRange(btn) {
+            document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.timeRange = btn.dataset.range;
+
+            const customInputs = document.getElementById('customRangeInputs');
+            customInputs.style.display = state.timeRange === 'custom' ? 'flex' : 'none';
+
+            updateSourceBadge();
+        }
+
+        function updateSourceBadge() {
+            const badge = document.getElementById('sourceBadge');
+            const source = determineSource();
+
+            if (source === 'athena') {
+                badge.className = 'source-badge athena';
+                badge.textContent = '📦 Athena (Historical)';
+            } else {
+                badge.className = 'source-badge cloudwatch';
+                badge.textContent = '⚡ CloudWatch (Live)';
+            }
+        }
+
+        function determineSource() {
+            if (state.timeRange !== 'custom') {
+                return 'cloudwatch';
+            }
+            const startTime = document.getElementById('startTime').value;
+            if (!startTime) return 'cloudwatch';
+
+            const start = new Date(startTime);
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+            return start < thirtyDaysAgo ? 'athena' : 'cloudwatch';
+        }
+
+        // Update badge when custom dates change
+        document.getElementById('startTime').addEventListener('change', updateSourceBadge);
+        document.getElementById('endTime').addEventListener('change', updateSourceBadge);
+
+        // ============================================================
+        // Query Execution
+        // ============================================================
+        async function executeQuery() {
+            const payload = buildPayload();
+            if (!payload) return;
+
+            showLoading(true);
+            hideError();
+
+            try {
+                const response = await fetch(CONFIG.API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || 'Query failed');
+                }
+
+                state.results = result.data;
+                state.source = result.source;
+                renderResults(result);
+            } catch (error) {
+                showError(error.message);
+                state.results = null;
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function buildPayload() {
+            const payload = {
+                type: state.activeType,
+                timeRange: state.timeRange,
+                limit: CONFIG.DEFAULT_LIMIT
+            };
+
+            if (state.timeRange === 'custom') {
+                const startTime = document.getElementById('startTime').value;
+                const endTime = document.getElementById('endTime').value;
+
+                if (!startTime || !endTime) {
+                    showError('Please select both start and end times for custom range.');
+                    return null;
+                }
+
+                payload.startTime = new Date(startTime).toISOString();
+                payload.endTime = new Date(endTime).toISOString();
+            }
+
+            if (state.activeType === 'user_activity') {
+                const username = document.getElementById('usernameInput').value.trim();
+                if (username) {
+                    payload.username = username;
+                }
+            }
+
+            return payload;
+        }
+
+        // ============================================================
+        // Results Rendering
+        // ============================================================
+        function renderResults(result) {
+            const tableWrapper = document.getElementById('tableWrapper');
+            const emptyState = document.getElementById('emptyState');
+            const resultCount = document.getElementById('resultCount');
+
+            if (!result.data || result.data.length === 0) {
+                tableWrapper.style.display = 'none';
+                emptyState.style.display = 'block';
+                emptyState.querySelector('h3').textContent = 'No results found';
+                emptyState.querySelector('p').textContent = 'Try adjusting your time range or query parameters.';
+                resultCount.innerHTML = '<strong>0</strong> results';
+                disableDownloads();
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            tableWrapper.style.display = 'block';
+            resultCount.innerHTML = `<strong>${result.count || result.data.length}</strong> results`;
+            enableDownloads();
+
+            // Update source badge from response
+            const badge = document.getElementById('sourceBadge');
+            if (result.source === 'athena') {
+                badge.className = 'source-badge athena';
+                badge.textContent = '📦 Athena (Historical)';
+            } else {
+                badge.className = 'source-badge cloudwatch';
+                badge.textContent = '⚡ CloudWatch (Live)';
+            }
+
+            // Determine columns from data
+            const columns = Object.keys(result.data[0]);
+            const thead = document.getElementById('tableHead');
+            const tbody = document.getElementById('tableBody');
+
+            thead.innerHTML = '<tr>' + columns.map(col =>
+                `<th>${formatColumnName(col)}</th>`
+            ).join('') + '</tr>';
+
+            tbody.innerHTML = result.data.map(row =>
+                '<tr>' + columns.map(col => {
+                    const value = row[col] != null ? row[col] : '';
+                    const cellClass = col.toLowerCase().includes('timestamp') || col.toLowerCase().includes('time')
+                        ? 'timestamp'
+                        : col.toLowerCase().includes('message') || col.toLowerCase().includes('query')
+                            ? 'message'
+                            : '';
+                    return `<td class="${cellClass}">${escapeHtml(String(value))}</td>`;
+                }).join('') + '</tr>'
+            ).join('');
+        }
+
+        function formatColumnName(col) {
+            return col.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // ============================================================
+        // Download
+        // ============================================================
+        function downloadResults(format) {
+            if (!state.results || state.results.length === 0) return;
+
+            let content, filename, mimeType;
+
+            if (format === 'json') {
+                content = JSON.stringify(state.results, null, 2);
+                filename = `${state.activeType}_${Date.now()}.json`;
+                mimeType = 'application/json';
+            } else {
+                const columns = Object.keys(state.results[0]);
+                const header = columns.join(',');
+                const rows = state.results.map(row =>
+                    columns.map(col => {
+                        const val = String(row[col] != null ? row[col] : '');
+                        return val.includes(',') || val.includes('"') || val.includes('\n')
+                            ? `"${val.replace(/"/g, '""')}"`
+                            : val;
+                    }).join(',')
+                );
+                content = [header, ...rows].join('\n');
+                filename = `${state.activeType}_${Date.now()}.csv`;
+                mimeType = 'text/csv';
+            }
+
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function enableDownloads() {
+            document.getElementById('downloadCsv').disabled = false;
+            document.getElementById('downloadJson').disabled = false;
+        }
+
+        function disableDownloads() {
+            document.getElementById('downloadCsv').disabled = true;
+            document.getElementById('downloadJson').disabled = true;
+        }
+
+        // ============================================================
+        // UI Helpers
+        // ============================================================
+        function showLoading(show) {
+            const overlay = document.getElementById('loadingOverlay');
+            const tableWrapper = document.getElementById('tableWrapper');
+            const emptyState = document.getElementById('emptyState');
+
+            if (show) {
+                overlay.classList.add('active');
+                tableWrapper.style.display = 'none';
+                emptyState.style.display = 'none';
+            } else {
+                overlay.classList.remove('active');
+            }
+        }
+
+        function showError(message) {
+            const errorState = document.getElementById('errorState');
+            errorState.textContent = `⚠️ Error: ${message}`;
+            errorState.classList.add('active');
+        }
+
+        function hideError() {
+            const errorState = document.getElementById('errorState');
+            errorState.classList.remove('active');
+        }
+    </script>
+</body>
+</html>

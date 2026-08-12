@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Database Audit AI Solution - Log Archival Infrastructure (Firehose + S3 + Athena)'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: db-audit-ai
+    Description: Project name for resource naming
+
+  LogGroupName:
+    Type: String
+    Default: /aws/rds/cluster/database-rnd/postgresql
+    Description: CloudWatch Log Group for PostgreSQL audit logs
+
+Resources:
+  # ─────────────────────────────────────────────
+  # S3 Buckets
+  # ─────────────────────────────────────────────
+
+  # Bucket for archived logs (Firehose destination)
+  LogArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-log-archive-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: GLACIER
+
+  # Bucket for Athena query results
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-athena-results-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldResults
+            Status: Enabled
+            ExpirationInDays: 7
+
+  # ─────────────────────────────────────────────
+  # Kinesis Firehose
+  # ─────────────────────────────────────────────
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt LogArchiveBucket.Arn
+                  - !Sub '${LogArchiveBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                Resource: '*'
+
+  LogDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${ProjectName}-log-stream'
+      DeliveryStreamType: DirectPut
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt LogArchiveBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        Prefix: 'rds-logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        ErrorOutputPrefix: 'rds-logs-errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        BufferingHints:
+          SizeInMBs: 5
+          IntervalInSeconds: 300
+        CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub '/aws/firehose/${ProjectName}-log-stream'
+          LogStreamName: S3Delivery
+
+  # ─────────────────────────────────────────────
+  # CloudWatch Subscription Filter
+  # ─────────────────────────────────────────────
+
+  SubscriptionFilterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-cw-to-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehosePutAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt LogDeliveryStream.Arn
+
+  SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn: LogDeliveryStream
+    Properties:
+      LogGroupName: !Ref LogGroupName
+      FilterPattern: ''
+      DestinationArn: !GetAtt LogDeliveryStream.Arn
+      RoleArn: !GetAtt SubscriptionFilterRole.Arn
+      FilterName: !Sub '${ProjectName}-to-firehose'
+
+  # ─────────────────────────────────────────────
+  # Athena
+  # ─────────────────────────────────────────────
+
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-workgroup'
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${AthenaResultsBucket}/athena-results/'
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+Outputs:
+  LogArchiveBucketName:
+    Value: !Ref LogArchiveBucket
+    Description: S3 bucket for archived logs
+
+  AthenaResultsBucketName:
+    Value: !Ref AthenaResultsBucket
+    Description: S3 bucket for Athena query results
+
+  FirehoseStreamName:
+    Value: !Ref LogDeliveryStream
+    Description: Kinesis Firehose delivery stream name
+
+  FirehoseStreamArn:
+    Value: !GetAtt LogDeliveryStream.Arn
+    Description: Kinesis Firehose delivery stream ARN
+
+  AthenaWorkGroupName:
+    Value: !Ref AthenaWorkGroup
+    Description: Athena workgroup name
