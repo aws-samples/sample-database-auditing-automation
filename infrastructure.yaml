@@ -310,7 +310,7 @@ Resources:
               })
               
               response = bedrock.invoke_model(
-                  modelId=os.environ.get('MODEL_ID', 'anthropic.claude-sonnet-4-6'),
+                  modelId=os.environ.get('MODEL_ID', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'),
                   body=body
               )
               
@@ -477,7 +477,7 @@ Resources:
                           })
                           
                           response = bedrock.invoke_model(
-                              modelId='anthropic.claude-sonnet-4-6',
+                              modelId='us.anthropic.claude-3-5-sonnet-20241022-v2:0',
                               body=body
                           )
                           
