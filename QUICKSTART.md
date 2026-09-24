@@ -179,7 +179,7 @@ aws events list-rules --name-prefix db-audit-ai --region us-east-1
 - Retains logs for 90 days in CloudWatch, longer in S3
 
 ### AI-Powered Analysis
-- Uses Amazon Bedrock (Claude Sonnet 4.6) for intelligent analysis
+- Uses Amazon Bedrock (Claude Sonnet 4.5) for intelligent analysis
 - Generates natural language insights from log data
 - Creates compliance-ready reports with evidence
 
