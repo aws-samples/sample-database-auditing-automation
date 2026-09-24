@@ -7,7 +7,7 @@ AI-powered database audit and compliance automation for Amazon RDS SQL Server an
 ## Features
 
 - **Automated Log Collection**: Streams audit logs from RDS/Aurora to S3 via CloudWatch
-- **AI-Powered Analysis**: Uses Amazon Bedrock (Claude 3) for intelligent log analysis
+- **AI-Powered Analysis**: Uses Amazon Bedrock (Claude Sonnet 4.5) for intelligent log analysis
 - **Anomaly Detection**: Hourly checks for suspicious activities
 - **Monthly Reports**: Automated compliance reports generated on the 1st of each month
 - **Real-time Alerts**: SNS notifications for high-severity anomalies
@@ -21,7 +21,7 @@ RDS/Aurora → CloudWatch Logs → Lambda (Processor) → S3 (Audit Logs)
                                                       ↓
                                             Lambda (AI Analyzer)
                                                       ↓
-                                            Bedrock (Claude 3)
+                                            Bedrock (Claude Sonnet 4.5)
                                                       ↓
                                             S3 (Reports) + SNS (Alerts)
 ```
@@ -30,7 +30,7 @@ RDS/Aurora → CloudWatch Logs → Lambda (Processor) → S3 (Audit Logs)
 
 - AWS Account with appropriate permissions
 - AWS CLI configured
-- Amazon Bedrock access (Claude 3 Sonnet model)
+- Amazon Bedrock access (Claude Sonnet 4.5 model)
 - RDS SQL Server and/or Aurora PostgreSQL instances
 
 ## One-Click Deploy
@@ -61,7 +61,7 @@ aws cloudformation deploy \
 
 ### 1. Enable Bedrock Model Access
 
-Go to AWS Console → Bedrock → Model access → Enable "Claude 3 Sonnet"
+Go to AWS Console → Bedrock → Model access → Enable "Claude Sonnet 4.5"
 
 ### 2. Update Configuration
 

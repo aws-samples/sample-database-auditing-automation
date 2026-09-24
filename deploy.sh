@@ -20,7 +20,7 @@ fi
 
 # Check Bedrock model access
 echo "Checking Bedrock model access..."
-aws bedrock list-foundation-models --region us-east-1 --query 'modelSummaries[?modelId==`anthropic.claude-3-sonnet-20240229-v1:0`]' > /dev/null 2>&1
+aws bedrock list-foundation-models --region us-east-1 --query 'modelSummaries[?modelId==`anthropic.claude-sonnet-4-5-20250929-v1:0`]' > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "Warning: Bedrock access may not be enabled. You may need to request model access in the AWS Console."
     echo "Go to: https://console.aws.amazon.com/bedrock/ -> Model access"

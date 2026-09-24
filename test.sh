@@ -104,7 +104,7 @@ fi
 # Test 7: Test Bedrock Access
 echo ""
 echo "Test 7: Checking Bedrock access..."
-aws bedrock list-foundation-models --region us-east-1 --query 'modelSummaries[?contains(modelId, `claude-sonnet-4-6`)]' > /dev/null 2>&1
+aws bedrock list-foundation-models --region us-east-1 --query 'modelSummaries[?contains(modelId, `claude-sonnet-4-5-20250929-v1:0`)]' > /dev/null 2>&1
 if [ $? -eq 0 ]; then
     echo "✓ Bedrock access configured"
 else
